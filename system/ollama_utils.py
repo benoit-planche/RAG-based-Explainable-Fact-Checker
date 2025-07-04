@@ -154,23 +154,6 @@ class SimpleDocumentLoader:
         
         return documents
 
-def cosine_similarity(a: List[float], b: List[float]) -> float:
-    """Calculate cosine similarity between two vectors"""
-    a = np.array(a)
-    b = np.array(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-def simple_similarity_search(embeddings: List[List[float]], query_embedding: List[float], k: int = 5) -> List[int]:
-    """Simple similarity search"""
-    similarities = []
-    for i, embedding in enumerate(embeddings):
-        sim = cosine_similarity(query_embedding, embedding)
-        similarities.append((i, sim))
-    
-    # Sort by similarity and return top k
-    similarities.sort(key=lambda x: x[1], reverse=True)
-    return [idx for idx, _ in similarities[:k]]
-
 def format_prompt(template: str, **kwargs) -> str:
     """Simple prompt formatting to replace PromptTemplate"""
     return template.format(**kwargs)

@@ -8,8 +8,10 @@ from datetime import datetime
 import pandas as pd
 import re
 from ollama_config import config
-from ollama_utils import OllamaClient, OllamaEmbeddings, format_prompt, extract_verdict
+from ollama_utils import OllamaClient, OllamaEmbeddings, format_prompt, extract_verdict, SimpleTextSplitter
+from mmr_utils import mmr_similarity_search
 from dotenv import load_dotenv
+from pdf_loader import PDFDocumentLoader
 
 # Streamlit page configuration - MUST be first!
 st.set_page_config(
@@ -132,59 +134,49 @@ def generate_search_queries(claim):
     st.session_state.tokens_used += ollama_client.tokens_used
     return result
 
-def retrieve_documents(claim):
-    """Retrieve relevant documents from vector store or use fallback approach."""
-    # First generate search queries
+def retrieve_documents(claim, data_dir="/home/moi/Documents/internship/climat-misinformation-detection/rapport", k=3, lambda_param=0.5):
+    """Retrieve relevant documents from local PDF files using MMR selection."""
+    # Générer les requêtes de recherche
     queries_text = generate_search_queries(claim)
-    
-    # Extract the queries (assuming they're listed with numbers, bullets, or lines)
     queries = re.findall(r'(?:^|\n)(?:\d+\.|\*|\-)\s*(.+?)(?=\n|$)', queries_text)
-    
-    # If no structured queries found, try to split by newlines
     if not queries:
         queries = [q.strip() for q in queries_text.split('\n') if q.strip()]
-    
-    # If still empty, use the original claim as fallback
     if not queries:
         queries = [claim]
-    
-    # Keep track of all retrieved documents
+    # On prend la première requête générée pour l'embedding
+    query_for_embedding = queries[0]
+
+    # Charger et splitter les documents PDF
+    documents = PDFDocumentLoader.load_directory(data_dir)
+    splitter = SimpleTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = splitter.split_documents(documents)
+    if not chunks:
+        st.warning("Aucun document PDF trouvé dans le dossier spécifié.")
+        return []
+
+    # Générer les embeddings des chunks et de la requête
+    embeddings_model = OllamaEmbeddings()
+    chunk_texts = [chunk['page_content'] for chunk in chunks]
+    chunk_embeddings = embeddings_model.embed_documents(chunk_texts)
+    query_embedding = embeddings_model.embed_query(query_for_embedding)
+
+    # Sélectionner les meilleurs chunks avec MMR
+    selected_indices = mmr_similarity_search(chunk_embeddings, query_embedding, k=k, lambda_param=lambda_param)
+    selected_chunks = [chunks[i] for i in selected_indices]
+
+    # Formater les documents pour l'affichage/traitement
     all_docs = []
     doc_sources = {}
-    
-    # For now, we'll use a simple approach without vector store
-    # In a real implementation, you would use the vector store here
-    if vectorstore:
-        # Retrieve documents for each query
-        for query in queries[:3]:  # Limit to first 3 queries to control costs
-            docs = vectorstore.similarity_search(query, k=3)
-            
-            for doc in docs:
-                doc_id = str(uuid.uuid4())[:8]
-                doc_content = doc.page_content
-                doc_source = doc.metadata.get('source', 'Unknown')
-                
-                all_docs.append(f"[Document {doc_id}]\n{doc_content}\n")
-                doc_sources[doc_id] = {
-                    'source': doc_source,
-                    'content': doc_content,
-                    'query': query
-                }
-    else:
-        # Fallback: create mock documents for demonstration
-        # In a real implementation, you would integrate with actual document sources
-        for i, query in enumerate(queries[:3]):
-            doc_id = str(uuid.uuid4())[:8]
-            # Create a mock document based on the query
-            mock_content = f"This is a mock document related to: {query}. In a real implementation, this would contain actual factual information from reliable sources."
-            
-            all_docs.append(f"[Document {doc_id}]\n{mock_content}\n")
-            doc_sources[doc_id] = {
-                'source': f'Mock Source {i+1}',
-                'content': mock_content,
-                'query': query
-            }
-    
+    for i, chunk in enumerate(selected_chunks):
+        doc_id = str(uuid.uuid4())[:8]
+        doc_content = chunk['page_content']
+        doc_source = chunk['metadata'].get('source', 'Unknown')
+        all_docs.append(f"[Document {doc_id}]\n{doc_content}\n")
+        doc_sources[doc_id] = {
+            'source': doc_source,
+            'content': doc_content,
+            'query': query_for_embedding
+        }
     st.session_state.current_sources = doc_sources
     return all_docs
 
